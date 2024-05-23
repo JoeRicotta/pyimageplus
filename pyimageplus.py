@@ -1,11 +1,118 @@
-from ij import IJ, WindowManager, ImagePlus
+from ij import IJ, WindowManager
 from ij.plugin import ImageCalculator, HyperStackConverter, ZProjector, Concatenator
 from ij.plugin.frame import RoiManager
+from ij.gui import Roi
+from ij.measure import ResultsTable
 
 import os
 import json
 
+class PyRoiManager(object):
+	"""
+	Bindings to ROI manager for easier use.
+	"""
+	def __init__(self):
+		RoiManager()
+		self.reset()
+	
+	@property
+	def _rm(self):
+		return RoiManager.getRoiManager()
+
+	@property
+	def rois(self):
+		all_rois = self[0:len(self)]
+		return {name : roi for name, roi in zip(self.names, all_rois)}
+
+	@property
+	def names(self):
+		names = []
+		for i in range(len(self)):
+			names.append(self._rm.getName(i))
+		return names
+	
+	@property
+	def has_selection(self):
+		return self._rm.selected() > 0
+			
+	
+	def _name_to_ind(self, name):
+		# utility to return the index of the roi name
+		for i, cur_name in enumerate(self.names):
+			if cur_name == name:
+				return i
+
+	def __len__(self):
+		return self._rm.getCount()
+	
+	def __iter__(self):
+		return iter([self[i] for i in range(len(self))])
+
+	def __getitem__(self, key):
+
+		if isinstance(key, int):
+			return self._rm.getRoi(key)
+		
+		elif isinstance(key, slice):
+			start, stop, _ = key.start, key.stop, key.step
+			out_list = []
+			for i in range(start, stop):
+				out_list.append(self._rm.getRoi(i))
+			return out_list
+		
+		elif isinstance(key, str):
+			name_ind = self.names.index(key)
+			return self._rm.getRoi(name_ind)
+		
+	def open_rois(self, path):
+		# load roi from a given path
+		full_path = os.path.abspath(path)
+		self._rm.open(full_path)
+		
+	def reset(self):
+		self._rm.reset()
+
+	def select(self, pyimp, key):
+		# select an roi by name, index or by roi itself
+		if isinstance(key, int):
+			self._rm.select(pyimp._image, key)
+
+		elif isinstance(key, str):
+			ind = self._name_to_ind(key)
+			self._rm.select(pyimp._image, ind)
+
+		elif isinstance(key, Roi):
+			ind = self._rm.getRoiIndex(key)
+			self._rm.select(pyimp._image, ind)
+
+		else:
+			raise(ValueError("Unrecognized roi to select."))
+
+	def deselect(self, key=None):
+		# deselect all or any single roi
+		if isinstance(key, str):
+			ind = self._name_to_ind(key)
+			self._rm.deselect(ind)
+
+		elif isinstance(key, int):
+			roi = self._rm.getRoi(key)
+			self._rm.deselect(roi)
+
+		elif isinstance(key, Roi):
+			self._rm.deselect(key)
+
+		elif isinstance(key, type(None)):
+			self._rm.deselect()
+
+		else:
+			raise(ValueError("Unrecognized roi to deselect."))
+
+
 class PyImagePlus(object):
+
+	_IMAGES = []
+
+	_PyRoiManager = PyRoiManager()	
 
 	@classmethod
 	def _GET_N_RECENT_IMAGES(cls, n):
@@ -14,6 +121,18 @@ class PyImagePlus(object):
 			images.append(WindowManager.getCurrentImage())
 			WindowManager.putBehind()
 		return images
+	
+	@classmethod
+	def _ADD_IMAGE(cls, obj):
+		cls._IMAGES.append(obj)
+
+	@classmethod
+	def _REM_IMAGE_BY_TITLE(cls, title):
+		for i, cur_img in enumerate(cls._IMAGES):
+			if cur_img.title == title:
+				ind = i
+				break
+		del cls._IMAGES[ind]
 
 	_METADATA_DEFAULT = {"json" : dict(),
 					  "mat" : dict(),
@@ -58,10 +177,18 @@ class PyImagePlus(object):
 
 		# showing the image after initialization
 		self._image.show()
-		
+				
 		# automatically enhancing contrast
 		IJ.run(self._image, "Select All", "")
 		IJ.run(self._image, "Enhance Contrast", "saturated=0.35")
+
+		# handle protected propreties & add image to the master list
+		self._window = self._image.getWindow()
+		self._processor = self._image.getProcessor()
+		self._ADD_IMAGE(self)
+
+		# roi manager
+		self.roi_path = None
 
 	@property
 	def image_path(self):
@@ -73,11 +200,9 @@ class PyImagePlus(object):
 	def path(self):
 		return self._path
 	
-	# name attribute: extract from image
 	@property
 	def title(self):
-		return self._image.getTitle()
-		
+		return self._image.getTitle()	
 	@title.setter
 	def title(self, value):
 		self._image.setTitle(value)
@@ -105,7 +230,15 @@ class PyImagePlus(object):
 	@property
 	def n_slices(self):
 		return self._image.getNSlices()
-
+	
+	@property
+	def rois(self):
+		return self._PyRoiManager.rois
+	
+	def set_title(self, title):
+		# for use in method chains
+		self.title = title
+		return self
 	
 	def add_metadata(self, key, file):
 		"""
@@ -179,39 +312,25 @@ class PyImagePlus(object):
 		# now saving ImageJ
 		IJ.save()
 
-	def _select_image(self):
-		WindowManager.getImage(self.title)
-
 	#####################
 	# binary operations #
 	#####################
 
-	def __op2(self, other, operation, inplace=False, enforce32=True):
+	def __op2(self, other, operation):
 		# genenic function to perform simple operations on other images or on numbers
-		if enforce32:
-			IJ.run(self._image, "32-bit", "")
 			
 		if isinstance(other, PyImagePlus):
-			if enforce32:
-				IJ.run(other._image, "32-bit", "")
 
-			if inplace:
-				ImageCalculator.run(self._image, other._image, operation)				
-
-			else:	
-				operation += " create 32-bit stack"
-				imp = ImageCalculator.run(self._image, other._image, operation)
-				return PyImagePlus(_image=imp)
+			operation += " create 32-bit stack"
+			imp = ImageCalculator.run(self._image, other._image, operation)
+			return PyImagePlus(_image=imp)
 				
 		elif isinstance(other, int) or isinstance(other, float):
-			if inplace:
-				# edit image in-place using IJ.run
-				IJ.run(self._image, operation + "...", "value=" + str(other) + " stack")
-			else:
-				# duplicate image, perform operation on that image and then return
-				imp = self._dup_image()
-				IJ.run(imp, operation + "...", "value=" + str(other) + " stack")
-				return PyImagePlus(_image=imp)
+
+			# duplicate image, perform operation on that image and then return
+			imp = self._dup_image()
+			IJ.run(imp, operation + "...", "value=" + str(other) + " stack")
+			return PyImagePlus(_image=imp)
 
 		else:
 			raise(ValueError(operation + " not defined for object of type " + str(type(other))))		
@@ -262,18 +381,6 @@ class PyImagePlus(object):
 	def __xor__(self, other):
 		return self.__op2(other, "XOR")
 	
-	def __iadd__(self, other):
-		return self.__op2(other, "Add", inplace=True)
-
-	def __isub__(self, other):
-		return self.__op2(other, "Subtract", inplace=True)
-	
-	def __imul__(self, other):
-		return self.__op2(other, "Multiply", inplace=True)
-	
-	def __idiv__(self, other):
-		return self.__op2(other, "Divide", inplace=True)
-	
 	def __radd__(self, other):
 		return self + other
 	
@@ -284,16 +391,16 @@ class PyImagePlus(object):
 		return self * other
 	
 	def __rdiv__(self, other):
-		self.invert()
-		out = other * self
-		self.invert()
+		self._processor.invert()
+		out = self * other
+		self._processor.invert()
 		return out
-
-	def invert(self):
-		IJ.run(self._image, "32-bit", "")
-		inverted = self._image.getProcessor()
-		inverted.invert()
-		self._image.setProcessor(inverted)
+	
+	def __max__(self):
+		return self._processor.getMax()
+	
+	def __min__(self):
+		return self._processor.getMin()		
 
 	##########################
 	# Indexing and iteration #
@@ -301,7 +408,7 @@ class PyImagePlus(object):
 	def __getitem__(self, key):
 
 		if isinstance(key, slice):
-			start, stop, by = key.start, key.stop, key.step
+			start, stop, _ = key.start, key.stop, key.step
 			imp = self._image.crop(str(start) + "-" + str(stop))
 			return PyImagePlus(_image = imp)
 		
@@ -312,30 +419,52 @@ class PyImagePlus(object):
 	def __len__(self):
 		return self.dimensions[3]
 	
+	def __iter__(self):
+		return iter([self[i] for i in range(len(self))])
+	
 	#####################
 	# Custom operations #
 	#####################
 
 	# custom operations
-	def _log(self):
-		pass
+	def log(self):
+		IJ.run(self._image, "Log", "stack")
+		return self
 
-	def _exp(self):
-		pass
+	def exp(self):
+		IJ.run(self._image, "Exp", "stack")
+		return self
+		
+	def sqrt(self):
+		IJ.run(self._image, "Square Root", "stack")
+		return self
+	
+	def invert(self):
+		IJ.run(self._image, "Invert", "stack")
+		return self
+	
+	def square(self):
+		IJ.run(self._image, "Square", "stack")
+		return self
+
+
+	##########################
+	# Container manipulation #
+	##########################
 
 	def append(self, other):
 		"""
 		build a new stack in-place
+		WARNING: UNSTABLE, USE CONCATENATE INSTEAD
 		"""
 		imp = Concatenator.run(self._image, other._image)
 		imp.show()
 		if imp.isHyperStack():
 			HyperStackConverter.toStack(imp)
-		
-		self._image.close()
+		title = self.title
 		self._image = imp
-
-
+		self._REM_IMAGE_BY_TITLE(title)
+		
 	def concatenate(self, other):
 		"""
 		concatenate stacks, but not in place
@@ -346,16 +475,6 @@ class PyImagePlus(object):
 			HyperStackConverter.toStack(imp)
 		imp.title = self.title + ", " + other.title
 		return PyImagePlus(_image=imp)
-
-	def plot(self):
-		"""
-		Create a plot image.
-		"""
-		IJ.run(self._image, "Plot Z-axis Profile", "")
-		result = WindowManager.getCurrentImage()
-		result.show()
-
-		return PyImagePlus(_image=result)
 	
 	def split(self, n):
 		"""
@@ -367,27 +486,89 @@ class PyImagePlus(object):
 			out_list.append(PyImagePlus(_image=img))
 		out_list.reverse()
 		return out_list
+	
+	def plot(self, roi=None):
+		"""
+		Create a plot image.
+		"""
+		if roi:
+			pass
+		
+		IJ.run(self._image, "Plot Z-axis Profile", "")
+		result = WindowManager.getCurrentImage()
+		result.show()
+
+		return PyImagePlus(_image=result)
+	
+	def z_project(self, stat):
+		"""
+		complete a z-projection using the statistic given
+		"""
+		stats = ['avg', 'min', 'max', 'sum', 'sd', 'median']
+		if stat not in stat:
+			raise(ValueError("statistic " + str(stat) + " is not valid. Please use one of \n\t" + str(stats)))
+		result = ZProjector.run(self._image, stat)
+		return PyImagePlus(_image=result)
+
+	def measure(self):
+
+		if not self._PyRoiManager.has_selection:
+			IJ.run(self._image, "Select All", "")
+		
+		rt = ResultsTable()
+		res = self._PyRoiManager._rm.multiMeasure(self._image)
+		rt.updateResults()
+		return res
+	
+
+	##################
+	## ROI utilites ##
+	##################
+	def select_roi(self, val):
+		self._PyRoiManager.select(self, val)
+		return self
+
+	def deselect_roi(self, val=None):
+		self._PyRoiManager.deselect(val)
+		return self
+
+	#################
+	## Filters ######
+	#################
+	def filt_gauss3D(self, x=0, y=0, z=3):
+		IJ.run(self._image, "Gaussian Blur 3D...", "x=" + str(x) + " y=" + str(y) + " z=" + str(z))
+		return self
+	
+	# TODO: add more filters here
 
 
-
-
+####################
+# Window utilities #
+####################
 
 def close_all():
 	IJ.run("Close All")
-		
-def log(pmp):
+
+def keep_only(*imgs):
 	"""
-	log for a pyImagePlus object.
+	Closes all images except for those in the function.
 	"""
-	return pmp._log()
-		
+	all_titles = WindowManager.getImageTitles()
+	keep_titles = [img.title for img in imgs]
+	for title in all_titles:
+		if title in keep_titles:
+			continue
+		imp = WindowManager.getImage(title)
+		imp.close()
+		PyImagePlus._REM_IMAGE_BY_TITLE(title)
 
-		
+def get_pyimage(title):
+	for img in PyImagePlus._IMAGES:
+		if img.title == title:
+			WindowManager.toFront(img._window)
+			return img
 
-
-		
-
-	
-
-		
-
+#######################
+## Import utils #######
+#######################
+__all__ = ['PyImagePlus', 'PyRoiManager', 'close_all', 'keep_only', 'get_pyimage']
