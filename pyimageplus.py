@@ -451,19 +451,6 @@ class PyImagePlus(object):
 	##########################
 	# Container manipulation #
 	##########################
-
-	def append(self, other):
-		"""
-		build a new stack in-place
-		WARNING: UNSTABLE, USE CONCATENATE INSTEAD
-		"""
-		imp = Concatenator.run(self._image, other._image)
-		imp.show()
-		if imp.isHyperStack():
-			HyperStackConverter.toStack(imp)
-		title = self.title
-		self._image = imp
-		self._REM_IMAGE_BY_TITLE(title)
 		
 	def concatenate(self, other):
 		"""
@@ -487,12 +474,10 @@ class PyImagePlus(object):
 		out_list.reverse()
 		return out_list
 	
-	def plot(self, roi=None):
+	def plot(self):
 		"""
 		Create a plot image.
 		"""
-		if roi:
-			pass
 		
 		IJ.run(self._image, "Plot Z-axis Profile", "")
 		result = WindowManager.getCurrentImage()
@@ -520,6 +505,11 @@ class PyImagePlus(object):
 		rt.updateResults()
 		return res
 	
+	def deinterleave(self, n_chans):
+		IJ.run(self._image, "Deinterleave", "how=" + str(n_chans))
+		imgs = self._GET_N_RECENT_IMAGES(n_chans)
+		return [PyImagePlus(_image=img) for img in imgs]
+		
 
 	##################
 	## ROI utilites ##
