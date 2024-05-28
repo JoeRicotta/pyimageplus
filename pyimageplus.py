@@ -89,6 +89,7 @@ class PyRoiManager(object):
 			raise(ValueError("Unrecognized roi to select."))
 
 	def deselect(self, key=None):
+
 		# deselect all or any single roi
 		if isinstance(key, str):
 			ind = self._name_to_ind(key)
@@ -106,13 +107,59 @@ class PyRoiManager(object):
 
 		else:
 			raise(ValueError("Unrecognized roi to deselect."))
+		
+
+class PyResultsTable(object):
+
+	def __init__(self):
+		ResultsTable()
+		self.reset()
+	
+	@property
+	def _table(self):
+		return ResultsTable().getResultsTable()
+	
+	def reset(self):
+		self._table.reset()
+	
+	@property
+	def columns(self):
+		return self._table.getHeadings()
+	
+	@property
+	def shape(self):
+		return (self._table.size(), len(self.columns))
+
+	def __getitem__(self, val):
+
+		if isinstance(val, tuple):
+			# i.e. table[3,"Mean"] or table[2,1]
+			if len(val) != 2:
+				raise(ValueError("Must index two dimensions."))
+			
+			col = self._table.getColumn(val[1])
+			return col[val[0]]
+
+		if isinstance(val, int):
+			return self._table.getRowAsString(val)
+		
+		elif isinstance(val, str):
+			return self._table.getColumn(val)
+
 
 
 class PyImagePlus(object):
+	"""
+	A class which is meant to treat imagePlus objects as true objects in python,
+	allowing simple manipulation of images without the need to call inconvenient
+	ImageJ plugins.
+	"""
 
 	_IMAGES = []
 
 	_PyRoiManager = PyRoiManager()	
+
+	_PyResultsTable = PyResultsTable()
 
 	@classmethod
 	def _GET_N_RECENT_IMAGES(cls, n):
@@ -147,12 +194,6 @@ class PyImagePlus(object):
 					  "path",
 					  "image_path",
 					  "metadata_paths"] # for use in saving json object
-
-	"""
-	A class which is meant to treat imagePlus objects as true objects in python,
-	allowing simple manipulation of images without the need to call inconvenient
-	ImageJ plugins.
-	"""
     
 	def __init__(self,
 			  image_path = None,
@@ -178,9 +219,9 @@ class PyImagePlus(object):
 		# showing the image after initialization
 		self._image.show()
 				
-		# automatically enhancing contrast
-		IJ.run(self._image, "Select All", "")
-		IJ.run(self._image, "Enhance Contrast", "saturated=0.35")
+		# automatically enhancing contrast based on entire image
+		self.select_all()
+		self.enhance_contrast()
 
 		# handle protected propreties & add image to the master list
 		self._window = self._image.getWindow()
@@ -189,6 +230,7 @@ class PyImagePlus(object):
 
 		# roi manager
 		self.roi_path = None
+		self.cur_roi = "All"
 
 	@property
 	def image_path(self):
@@ -344,7 +386,7 @@ class PyImagePlus(object):
 			return PyImagePlus(_image=imp)
 		
 	def __repr__(self):
-		return self.title
+		return self.title + " (roi: " + str(self.cur_roi) + ")"
 	
 	def __abs__(self):
 		return self.__op1("Abs")
@@ -446,6 +488,33 @@ class PyImagePlus(object):
 	def square(self):
 		IJ.run(self._image, "Square", "stack")
 		return self
+	
+	#####################
+	# Results table api #
+	#####################
+
+	@property
+	def mean(self):
+		# accesses the mean for all frames in the image
+		out = []
+		for i in range(self.n_slices):
+			temp_img = self[i]
+			print(self.cur_roi)
+			out.append(temp_img._image.getProcessor().getStats())
+			temp_img.close()
+			del temp_img
+		return out
+	
+	# TODO: make painless way to access these values...
+			
+	@property
+	def median(self):
+		pass
+
+	@property
+	def std(self):
+		# accesses the std for all frames in the image
+		pass
 
 
 	##########################
@@ -496,14 +565,12 @@ class PyImagePlus(object):
 		return PyImagePlus(_image=result)
 
 	def measure(self):
-
-		if not self._PyRoiManager.has_selection:
-			IJ.run(self._image, "Select All", "")
-		
-		rt = ResultsTable()
+		"""
+		A utility for adding to the results table for later saving.
+		The results table may or may not be accessible to the user.
+		"""		
 		res = self._PyRoiManager._rm.multiMeasure(self._image)
-		rt.updateResults()
-		return res
+		return self._PyResultsTable
 	
 	def deinterleave(self, n_chans):
 		IJ.run(self._image, "Deinterleave", "how=" + str(n_chans))
@@ -514,13 +581,21 @@ class PyImagePlus(object):
 	##################
 	## ROI utilites ##
 	##################
-	def select_roi(self, val):
+	def select_roi(self, val):			
 		self._PyRoiManager.select(self, val)
+		self.cur_roi = val
 		return self
 
 	def deselect_roi(self, val=None):
 		self._PyRoiManager.deselect(val)
+		self.cur_roi = None
 		return self
+	
+	def select_all(self):
+		IJ.run(self._image, "Select All", "")
+		self.cur_roi = "All"
+		return self
+
 
 	#################
 	## Filters ######
@@ -530,6 +605,13 @@ class PyImagePlus(object):
 		return self
 	
 	# TODO: add more filters here
+
+	#################
+	# B & C #########
+	#################
+	def enhance_contrast(self):
+		IJ.run(self._image, "Enhance Contrast", "saturated=0.35")
+		return self
 
 
 ####################
