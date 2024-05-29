@@ -2,10 +2,8 @@ from ij import IJ, WindowManager
 from ij.plugin import ImageCalculator, HyperStackConverter, ZProjector, Concatenator
 from ij.plugin.frame import RoiManager
 from ij.gui import Roi
-from ij.measure import ResultsTable
 
 import os
-import json
 
 
 class PyRoiManager(object):
@@ -35,7 +33,6 @@ class PyRoiManager(object):
 	@property
 	def has_selection(self):
 		return self._rm.selected() > 0
-			
 	
 	def _name_to_ind(self, name):
 		# utility to return the index of the roi name
@@ -111,8 +108,72 @@ class PyRoiManager(object):
 			raise(ValueError("Unrecognized roi to deselect."))
 		
 
+class _PathHandler(object):
+	"""
+	Class to automatically handle pathnames and filenames given the current image title.
+	"""
 
-_available_stats = "area mean standard modal min centroid center perimeter bounding fit shape feret's integrated median skewness kurtosis stack".split(" ")
+	@staticmethod
+	def _check_tif(val):
+		if '.tif' not in val:
+			val += '.tif'
+		return val
+
+	class FromPath(object):
+
+		def __init__(self, path):
+			# working with paths
+			full_path = os.path.abspath(path)
+			self.full_path = full_path
+			
+			self.exists = os.path.exists(full_path)
+			self.is_file = os.path.isfile(full_path)
+			self.is_dir = os.path.isdir(full_path)
+			self.ext = os.path.splitext(full_path)[1]
+			
+			split = os.path.split(full_path)
+			if self.is_file:
+				self.parent, self.file = split
+			else:
+				self.parent, self.file = None, None
+			self.is_saved = True
+
+		def __repr__(self):
+			return self.full_path
+
+	class FromPathHandler(object):
+
+		def __init__(self, PathHandler):
+			self.full_path = PathHandler.full_path
+			self.exists = PathHandler.exists
+			self.is_file = PathHandler.is_file
+			self.is_dir = PathHandler.is_dir
+			self.ext = PathHandler.ext
+			self.parent = PathHandler.parent
+			self.file = PathHandler.file
+			self.is_saved = False
+
+		def update_from_name(self, name, ret=False):
+			"""
+			If the name of the PyImagePlus object changes, this is used
+			to change the savename within the _PathHandler.FromPathHandler base class.
+			"""
+			self.file = _PathHandler._check_tif(name)
+			self.full_path = os.path.join(self.parent, name)
+
+			self.exists = os.path.exists(self.full_path)
+			self.is_file = os.path.isfile(self.full_path)
+			self.is_dir = os.path.isdir(self.full_path)
+
+			if ret:
+				return self
+
+
+		def __repr__(self):
+			return self.full_path
+
+
+
 
 class PyImagePlus(object):
 	"""
@@ -124,8 +185,6 @@ class PyImagePlus(object):
 	_IMAGES = []
 
 	_PyRoiManager = PyRoiManager()	
-
-	_stats = _available_stats
 
 	@classmethod
 	def _GET_N_RECENT_IMAGES(cls, n):
@@ -147,41 +206,26 @@ class PyImagePlus(object):
 				break
 		del cls._IMAGES[ind]
 
-	_METADATA_DEFAULT = {"json" : dict(),
-					  "mat" : dict(),
-					  "tdms" : dict(),
-					  "tif" : dict(),
-					  "bin" : dict(),
-					  "pcoraw" : dict(),
-					  "csv" : dict(),
-					  "txt" : dict()}
 	
-	_SAVED_ATTRIBUTES = ["name",
-					  "path",
-					  "image_path",
-					  "metadata_paths"] # for use in saving json object
-    
+	
+	
+	
 	def __init__(self,
 			  image_path = None,
-			  metadata_paths = _METADATA_DEFAULT,
-			  _image = None):
+			  _image = None,
+			  _path_handler = None):
 
 		# if path given, immortalize it-- else, use None
 		if image_path:
-			full_path = os.path.abspath(image_path)
-			imp = IJ.openImage(full_path)
+			self.image_path = _PathHandler.FromPath(image_path)
+			imp = self._load_image()
 			self._image = imp
-			self._image_path = full_path
 
 		elif _image:
 			imp = _image
-			self._image_path = image_path
 			self._image = imp
-
-		# private variables
-		self._metadata_paths = metadata_paths
-		self._path = None # if saved object, where is json file
-
+			self.image_path = _PathHandler.FromPathHandler(_path_handler).update_from_name(self.title, True)
+			
 		# showing the image after initialization
 		self._image.show()
 				
@@ -198,25 +242,26 @@ class PyImagePlus(object):
 		self.roi_path = None
 		self.cur_roi = "All"
 
-		# statistics 
-		self._stats_to_run = ["Mean"] #TODO update this accordingly
-
-	@property
-	def image_path(self):
-		return self._image_path
-	@property
-	def metadata_paths(self):
-		return self._metadata_paths
-	@property
-	def path(self):
-		return self._path
+	def _load_image(self):
+		if self.image_path.ext =='.tif':
+			print("Opening .tif file")
+			return IJ.openImage(self.image_path.full_path)
+		elif self.image_path.ext =='.pcoraw':
+			print("Opening .pcoraw file")
+			IJ.run("Bio-Formats Importer", "open=" + self.image_path.full_path + " autoscale color_mode=Default rois_import=[ROI manager] view=[Standard ImageJ] stack_order=Default")
+			return self._GET_N_RECENT_IMAGES(1)[0]
 	
 	@property
 	def title(self):
 		return self._image.getTitle()	
 	@title.setter
 	def title(self, value):
-		self._image.setTitle(value)
+		# change the name of the image
+		self._image.setTitle(value) 
+
+		# update filename of the image
+		if isinstance(self.image_path, _PathHandler.FromPathHandler):
+			self.image_path.update_from_name(value, ret=False)
 
 	@property
 	def stack_size(self):
@@ -250,24 +295,6 @@ class PyImagePlus(object):
 		# for use in method chains
 		self.title = title
 		return self
-	
-	def add_metadata(self, key, file):
-		"""
-		Add metadata to the object using the given key and file extension
-		"""
-		# identify the extension of the file
-		full_file = os.path.abspath(file)
-		_, file_ext = os.path.splitext(full_file)
-
-		# ensure the file extension is in the provided dictionary
-		if not self._metadata_paths.get(file_ext):
-			raise(ValueError("File extension " + file_ext + " not recognized."))
-		
-		# check the metadata dictionary for the key
-		if self._metadata_paths[file_ext].get(key):
-			self._metadata_paths[file_ext][key].append(full_file)
-		else:
-			self._metadata_paths[file_ext].update({key : [full_file]})
 
 	def _dup_image(self):
 		new_imp = self._image.duplicate()
@@ -275,7 +302,7 @@ class PyImagePlus(object):
 	
 	def duplicate(self):
 		new_imp = self._image.duplicate()
-		return PyImagePlus(_image=new_imp)
+		return PyImagePlus(_image=new_imp, _path_handler=self.image_path)
 
 	def close(self):
 		self._image.close()
@@ -285,43 +312,6 @@ class PyImagePlus(object):
 
 	def show(self):
 		self._image.show()
-
-	def save(self, save_path=None):
-		return 
-		"""
-		Save a file with all relevant string information from this object,
-		as well as the ImagePlus object it represents
-		"""
-		if save_path:
-			# coercing to full path
-			full_path = os.path.abspath(save_path)
-		else:
-			# extract the path from the image_path and current name
-			full_path = self.image_path
-
-		# checking to ensure .json is the extension
-		_, ext = os.path.splitext(full_path)
-		if ext != ".json":
-			raise(ValueError("Saved object must have .json extension, instead got " + ext))
-		
-		# gather all relevant attributes from this object
-		out_dict = dict()
-		for attribute in self._SAVED_ATTRIBUTES:
-			out_dict.update({attribute : self.__dict__.get(attribute)})
-
-		# prior to saving, alerting to any previous save
-		if os.path.exists(full_path):
-			print("Overwriting previous file.")
-
-		# saving the dictionary as json
-		stream = open(full_path, "w")
-		json.dump(out_dict, stream, indent='\t', sort_keys=True)
-		
-		# adding save path to object
-		self._path = full_path
-
-		# now saving ImageJ
-		IJ.save()
 
 	#####################
 	# binary operations #
@@ -334,14 +324,14 @@ class PyImagePlus(object):
 
 			operation += " create 32-bit stack"
 			imp = ImageCalculator.run(self._image, other._image, operation)
-			return PyImagePlus(_image=imp)
+			return PyImagePlus(_image=imp, _path_handler=self.image_path)
 				
 		elif isinstance(other, int) or isinstance(other, float):
 
 			# duplicate image, perform operation on that image and then return
 			imp = self._dup_image()
 			IJ.run(imp, operation + "...", "value=" + str(other) + " stack")
-			return PyImagePlus(_image=imp)
+			return PyImagePlus(_image=imp, _path_handler=self.image_path)
 
 		else:
 			raise(ValueError(operation + " not defined for object of type " + str(type(other))))		
@@ -352,7 +342,7 @@ class PyImagePlus(object):
 		else:
 			imp = self._dup_image()
 			IJ.run(imp, operation, "stack")
-			return PyImagePlus(_image=imp)
+			return PyImagePlus(_image=imp, _path_handler=self.image_path)
 		
 	def __repr__(self):
 		return self.title + " (roi: " + str(self.cur_roi) + ")"
@@ -366,7 +356,7 @@ class PyImagePlus(object):
 
 		imp = self._dup_image()
 		IJ.run(imp, "Macro...", "code=v^" + str(other) + " stack")
-		return PyImagePlus(_image=imp)
+		return PyImagePlus(_image=imp, _path_handler=self.image_path)
 	
 	def __neg__(self):
 		return self.__op2(-1, "Multiply")
@@ -406,32 +396,31 @@ class PyImagePlus(object):
 		out = self * other
 		self._processor.invert()
 		return out
-	
-	def __max__(self):
-		return self._processor.getMax()
-	
-	def __min__(self):
-		return self._processor.getMin()		
 
 	##########################
 	# Indexing and iteration #
 	##########################
 	def __getitem__(self, key):
-
+		
 		if isinstance(key, slice):
 			start, stop, _ = key.start, key.stop, key.step
 			imp = self._image.crop(str(start) + "-" + str(stop))
-			return PyImagePlus(_image = imp)
+			return PyImagePlus(_image = imp, _path_handler=self.image_path)
 		
 		elif isinstance(key, int):
+
+			if key == 0:
+				raise(ValueError("Indexing at 0 is not supported; start indexing at 1."))
+			
 			imp = self._image.crop(str(key))
-			return PyImagePlus(_image = imp)
+			return PyImagePlus(_image = imp, _path_handler=self.image_path)
 		
 	def __len__(self):
-		return self.dimensions[3]
+		return self.stack_size
 	
-	def __iter__(self):
-		return iter([self[i] for i in range(len(self))])
+	#TODO: fix this: it will return n images as opposed to looping through them individually
+	# def __iter__(self):
+	#	return iter([self[i+1] for i in range(len(self))])
 	
 	#####################
 	# Custom operations #
@@ -536,7 +525,7 @@ class PyImagePlus(object):
 		if imp.isHyperStack():
 			HyperStackConverter.toStack(imp)
 		imp.title = self.title + ", " + other.title
-		return PyImagePlus(_image=imp)
+		return PyImagePlus(_image=imp, _path_handler=self.image_path)
 	
 	def split(self, n):
 		"""
@@ -545,7 +534,7 @@ class PyImagePlus(object):
 		IJ.run(self._image, "Stack Splitter", "number="+str(n))
 		out_list = []
 		for img in self._GET_N_RECENT_IMAGES(n):
-			out_list.append(PyImagePlus(_image=img))
+			out_list.append(PyImagePlus(_image=img, _path_handler=self.image_path))
 		out_list.reverse()
 		return out_list
 	
@@ -558,7 +547,7 @@ class PyImagePlus(object):
 		result = WindowManager.getCurrentImage()
 		result.show()
 
-		return PyImagePlus(_image=result)
+		return PyImagePlus(_image=result, _path_handler=self.image_path)
 	
 	def z_project(self, stat):
 		"""
@@ -568,12 +557,12 @@ class PyImagePlus(object):
 		if stat not in stat:
 			raise(ValueError("statistic " + str(stat) + " is not valid. Please use one of \n\t" + str(stats)))
 		result = ZProjector.run(self._image, stat)
-		return PyImagePlus(_image=result)
+		return PyImagePlus(_image=result, _path_handler=self.image_path)
 	
 	def deinterleave(self, n_chans):
 		IJ.run(self._image, "Deinterleave", "how=" + str(n_chans))
 		imgs = self._GET_N_RECENT_IMAGES(n_chans)
-		return [PyImagePlus(_image=img) for img in imgs]
+		return [PyImagePlus(_image=img, _path_handler=self.image_path) for img in imgs]
 		
 
 	##################
@@ -593,7 +582,6 @@ class PyImagePlus(object):
 		IJ.run(self._image, "Select All", "")
 		self.cur_roi = "All"
 		return self
-
 
 	#################
 	## Filters ######
@@ -638,7 +626,84 @@ def get_pyimage(title):
 			WindowManager.toFront(img._window)
 			return img
 
+
+
+class PyTSeries(PyImagePlus):
+
+	"""
+	A wrapper around PyImagePlus to handle time series images.
+	Enables easier slicing of images wrt timed events.
+	"""
+
+	def __init__(self,
+			  image_path = None,
+			  Fs = 60,
+			  t0_s = 0,
+			  _image = None,
+			  _path_handler = None):
+			
+			super(PyTSeries, self).__init__(image_path, _image, _path_handler)
+
+			if not self._image:
+				raise(ValueError("Image unavailable."))
+			
+			# adding time-related attributes
+			self.Fs = float(Fs)
+			self.t0_s = t0_s
+			per = 1000/Fs # period in ms
+			self.time_ms = [float((i*per) + (t0_s*1000)) for i in range(len(self))]
+			self.time_s = [x/1000 for x in self.time_ms]
+			self.time_range = (min(self.time_ms), max(self.time_ms))
+
+	def __getitem__(self, key):
+		
+		if isinstance(key, slice):
+			start, stop, _ = key.start, key.stop, key.step
+			imp = self._image.crop(str(start) + "-" + str(stop))
+			return PyTSeries(
+				Fs=self.Fs,
+				t0_s = self.time_s[start],
+				_image = imp, 
+				_path_handler=self.image_path
+				)
+		
+		elif isinstance(key, int):
+
+			if key == 0:
+				raise(ValueError("Indexing at 0 is not supported; start indexing at 1."))
+			
+			imp = self._image.crop(str(key))
+			return PyTSeries(
+				Fs=self.Fs,
+				t0_s = self.time_s[start],
+				_image = imp, 
+				_path_handler=self.image_path
+				)
+			
+
+	def time_slice(self, start_ms, stop_ms):
+		"""
+		Slices the image between two time points.
+		"""
+		start_ind = [x > start_ms for x in self.time_ms].index(1)
+		stop_ind = [x <= stop_ms for x in self.time_ms].index(0)
+		return self[start_ind:stop_ind]
+
+	def deinterleave(self, n_chans):
+		IJ.run(self._image, "Deinterleave", "how=" + str(n_chans))
+		imgs = self._GET_N_RECENT_IMAGES(n_chans)
+		return [
+			PyTSeries(
+				Fs=self.Fs/n_chans,
+				t0_s = self.time_s[i],
+				_image=img, 
+				_path_handler=self.image_path
+				) for i,img in enumerate(imgs)]
+
+
+
+
 #######################
 ## Import utils #######
 #######################
-__all__ = ['PyImagePlus', 'PyRoiManager', 'close_all', 'keep_only', 'get_pyimage']
+__all__ = ['PyImagePlus', 'PyRoiManager', 'PyTSeries', 'close_all', 'keep_only', 'get_pyimage']
