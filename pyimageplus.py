@@ -7,6 +7,7 @@ from ij.measure import ResultsTable
 import os
 import json
 
+
 class PyRoiManager(object):
 	"""
 	Bindings to ROI manager for easier use.
@@ -68,6 +69,7 @@ class PyRoiManager(object):
 		# load roi from a given path
 		full_path = os.path.abspath(path)
 		self._rm.open(full_path)
+		print("opened rois")
 		
 	def reset(self):
 		self._rm.reset()
@@ -109,44 +111,8 @@ class PyRoiManager(object):
 			raise(ValueError("Unrecognized roi to deselect."))
 		
 
-class PyResultsTable(object):
 
-	def __init__(self):
-		ResultsTable()
-		self.reset()
-	
-	@property
-	def _table(self):
-		return ResultsTable().getResultsTable()
-	
-	def reset(self):
-		self._table.reset()
-	
-	@property
-	def columns(self):
-		return self._table.getHeadings()
-	
-	@property
-	def shape(self):
-		return (self._table.size(), len(self.columns))
-
-	def __getitem__(self, val):
-
-		if isinstance(val, tuple):
-			# i.e. table[3,"Mean"] or table[2,1]
-			if len(val) != 2:
-				raise(ValueError("Must index two dimensions."))
-			
-			col = self._table.getColumn(val[1])
-			return col[val[0]]
-
-		if isinstance(val, int):
-			return self._table.getRowAsString(val)
-		
-		elif isinstance(val, str):
-			return self._table.getColumn(val)
-
-
+_available_stats = "area mean standard modal min centroid center perimeter bounding fit shape feret's integrated median skewness kurtosis stack".split(" ")
 
 class PyImagePlus(object):
 	"""
@@ -159,7 +125,7 @@ class PyImagePlus(object):
 
 	_PyRoiManager = PyRoiManager()	
 
-	_PyResultsTable = PyResultsTable()
+	_stats = _available_stats
 
 	@classmethod
 	def _GET_N_RECENT_IMAGES(cls, n):
@@ -231,6 +197,9 @@ class PyImagePlus(object):
 		# roi manager
 		self.roi_path = None
 		self.cur_roi = "All"
+
+		# statistics 
+		self._stats_to_run = ["Mean"] #TODO update this accordingly
 
 	@property
 	def image_path(self):
@@ -489,32 +458,69 @@ class PyImagePlus(object):
 		IJ.run(self._image, "Square", "stack")
 		return self
 	
-	#####################
-	# Results table api #
-	#####################
+	##############
+	# Statistics #
+	##############
+	
+	def _get_stats(self, all=False):
+		"""
+		Helper function to only use getAllStatistics when asked, as it
+		is much slower. Otherwise, use getStatistics.
+		"""
+		cur_slice = self._image.getSlice()
+		out = []
+		for i in range(self.n_slices):
+			self._image.setSlice(i+1)
+			if all:
+				out.append(self._image.getAllStatistics())
+			else:
+				out.append(self._image.getStatistics())
+		self._image.setSlice(cur_slice)
+		return out
+	
+	@property
+	def _all_stats(self):
+		return self._get_stats(True)
+
+	@property
+	def stats(self):
+		return self._get_stats()
 
 	@property
 	def mean(self):
-		# accesses the mean for all frames in the image
-		out = []
-		for i in range(self.n_slices):
-			temp_img = self[i]
-			print(self.cur_roi)
-			out.append(temp_img._image.getProcessor().getStats())
-			temp_img.close()
-			del temp_img
-		return out
+		return [x.mean for x in self.stats]			
 	
-	# TODO: make painless way to access these values...
+	@property
+	def std(self):
+		return [x.stdDev for x in self._all_stats]			
 			
 	@property
 	def median(self):
-		pass
+		return [x.median for x in self._all_stats]		
 
 	@property
-	def std(self):
-		# accesses the std for all frames in the image
-		pass
+	def mode(self):
+		return [x.mode for x in self._all_stats]	
+	
+	@property
+	def kurtosis(self):
+		return [x.kurtosis for x in self._all_stats]
+	
+	@property
+	def skewness(self):
+		return [x.skewness for x in self._all_stats]
+	
+	@property
+	def area(self):
+		return [x.area for x in self._all_stats]
+	
+	@property
+	def max(self):
+		return [x.max for x in self._all_stats]
+	
+	@property
+	def min(self):
+		return [x.min for x in self._all_stats]	
 
 
 	##########################
@@ -563,14 +569,6 @@ class PyImagePlus(object):
 			raise(ValueError("statistic " + str(stat) + " is not valid. Please use one of \n\t" + str(stats)))
 		result = ZProjector.run(self._image, stat)
 		return PyImagePlus(_image=result)
-
-	def measure(self):
-		"""
-		A utility for adding to the results table for later saving.
-		The results table may or may not be accessible to the user.
-		"""		
-		res = self._PyRoiManager._rm.multiMeasure(self._image)
-		return self._PyResultsTable
 	
 	def deinterleave(self, n_chans):
 		IJ.run(self._image, "Deinterleave", "how=" + str(n_chans))
