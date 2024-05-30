@@ -125,6 +125,7 @@ class _PathHandler(object):
 			# working with paths
 			full_path = os.path.abspath(path)
 			self.full_path = full_path
+			self._source_path = full_path
 			
 			self.exists = os.path.exists(full_path)
 			self.is_file = os.path.isfile(full_path)
@@ -140,11 +141,20 @@ class _PathHandler(object):
 
 		def __repr__(self):
 			return self.full_path
+		
+		@property
+		def source_path(self):
+			return self._source_path
+		
+		@source_path.setter
+		def source_path(self, _):
+			raise(ValueError("Cannot edit source path."))
 
 	class FromPathHandler(object):
 
 		def __init__(self, PathHandler):
 			self.full_path = PathHandler.full_path
+			self._source_path = PathHandler.source_path
 			self.exists = PathHandler.exists
 			self.is_file = PathHandler.is_file
 			self.is_dir = PathHandler.is_dir
@@ -167,12 +177,86 @@ class _PathHandler(object):
 
 			if ret:
 				return self
-
+			
+		@property
+		def source_path(self):
+			return self._source_path
+		
+		@source_path.setter
+		def source_path(self, _):
+			raise(ValueError("Cannot edit source path."))
 
 		def __repr__(self):
 			return self.full_path
 
 
+class _PyWindowManager(object):
+	"""
+	Helper class to manage windows.
+	"""
+
+	@staticmethod
+	def _GET_N_RECENT_IMAGES(n):
+		images = []
+		for _ in range(n):
+			images.append(WindowManager.getCurrentImage())
+			WindowManager.putBehind()
+		return images
+
+
+class _PyHyperStackIndexer(object):
+	"""
+	Helper class to handle indexing into a hyperstack.
+	order: c, channels
+	  		z, slices
+			  t, frames
+
+	Must be accessed through properties channels, slices or frames to be indexed.
+	"""
+	# flat, channel, slice, frame
+	# c, z, t
+
+	def __init__(self, pyimp):
+		self.pyimp = pyimp
+		
+	@property
+	def channels(self):
+		self.dim = "channels"
+		return self
+
+	@property
+	def slices(self):
+		self.dim = "slices"
+		return self
+
+	@property
+	def frames(self):
+		self.dim = "frames"
+		return self
+
+	def __getitem__(self, val):
+
+		if isinstance(val, int):
+			key = str(val)
+
+		elif isinstance(val, slice):
+			start, stop = val.start, val.stop
+			key = str(start) + "-" + str(stop)
+		
+		if self.dim == "channels":
+			prompt = "channels=" + key
+		elif self.dim == "slices":
+			prompt = "slices=" + key
+		elif self.dim == "frames":
+			prompt = "frames=" + key
+
+		# getting a substack
+		IJ.run(self.pyimp._image, "Make Substack...", prompt)
+
+		# collecting recent images
+		img = _PyWindowManager._GET_N_RECENT_IMAGES(1)[0]
+		return PyImagePlus(_image= img,
+					 _path_handler= self.pyimp.image_path).set_title(self.pyimp.title + " " + prompt)
 
 
 class PyImagePlus(object):
@@ -185,14 +269,6 @@ class PyImagePlus(object):
 	_IMAGES = []
 
 	_PyRoiManager = PyRoiManager()	
-
-	@classmethod
-	def _GET_N_RECENT_IMAGES(cls, n):
-		images = []
-		for _ in range(n):
-			images.append(WindowManager.getCurrentImage())
-			WindowManager.putBehind()
-		return images
 	
 	@classmethod
 	def _ADD_IMAGE(cls, obj):
@@ -202,14 +278,9 @@ class PyImagePlus(object):
 	def _REM_IMAGE_BY_TITLE(cls, title):
 		for i, cur_img in enumerate(cls._IMAGES):
 			if cur_img.title == title:
-				ind = i
-				break
-		del cls._IMAGES[ind]
+				del cls._IMAGES[i]
+				return
 
-	
-	
-	
-	
 	def __init__(self,
 			  image_path = None,
 			  _image = None,
@@ -218,12 +289,11 @@ class PyImagePlus(object):
 		# if path given, immortalize it-- else, use None
 		if image_path:
 			self.image_path = _PathHandler.FromPath(image_path)
-			imp = self._load_image()
-			self._image = imp
+			self._image = self._load_image()
 
 		elif _image:
-			imp = _image
-			self._image = imp
+			# _path_handler being passed in implied
+			self._image = _image
 			self.image_path = _PathHandler.FromPathHandler(_path_handler).update_from_name(self.title, True)
 			
 		# showing the image after initialization
@@ -249,7 +319,7 @@ class PyImagePlus(object):
 		elif self.image_path.ext =='.pcoraw':
 			print("Opening .pcoraw file")
 			IJ.run("Bio-Formats Importer", "open=" + self.image_path.full_path + " autoscale color_mode=Default rois_import=[ROI manager] view=[Standard ImageJ] stack_order=Default")
-			return self._GET_N_RECENT_IMAGES(1)[0]
+			return _PyWindowManager._GET_N_RECENT_IMAGES(1)[0]
 	
 	@property
 	def title(self):
@@ -270,6 +340,18 @@ class PyImagePlus(object):
 	@property
 	def dimensions(self):
 		return self._image.getDimensions().tolist()
+	@dimensions.setter
+	def dimensions(self, val):
+		if len(val) != 3:
+			raise(ValueError("Setting dimensions requires [channels slices frames], use a list."))
+		self._image.setDimensions(val[0], val[1], val[2])
+
+	@property
+	def index(self):
+		return self._image.getSlice()
+	@index.setter
+	def index(self, val):
+		self._image.setSlice(val)
 	
 	@property
 	def n_channels(self):
@@ -291,9 +373,34 @@ class PyImagePlus(object):
 	def rois(self):
 		return self._PyRoiManager.rois
 	
+	@property
+	def is_hyperstack(self):
+		return self._image.isDisplayedHyperStack()
+	
+	@property
+	def is_stack(self):
+		return not self.is_hyperstack
+	
+	@property
+	def channels(self):
+		#returns an object with indexing capabilites
+		return _PyHyperStackIndexer(self).channels
+	
+	@property
+	def slices(self):
+		return _PyHyperStackIndexer(self).slices
+	
+	@property
+	def frames(self):
+		return _PyHyperStackIndexer(self).frames
+	
 	def set_title(self, title):
 		# for use in method chains
 		self.title = title
+		return self
+	
+	def set_dimensions(self, n_chans, n_slices, n_frames):
+		self.dimensions = [n_chans, n_slices, n_frames]
 		return self
 
 	def _dup_image(self):
@@ -312,6 +419,28 @@ class PyImagePlus(object):
 
 	def show(self):
 		self._image.show()
+
+	####################################
+	## Hyperstack & stack conversions ##
+	####################################
+
+	def to_hyperstack(self):
+		if self.is_hyperstack:
+			return self
+		self.deselect_roi()
+		self._image = HyperStackConverter.toHyperStack(self._image, 
+												 self.n_channels,
+												 self.n_slices,
+												 self.n_frames,
+												 "grayscale")
+		return self
+
+	def to_stack(self):
+		if self.is_stack:
+			return self	
+		self.deselect_roi()
+		self._image = HyperStackConverter.toStack(self._image)
+		return self
 
 	#####################
 	# binary operations #
@@ -533,7 +662,7 @@ class PyImagePlus(object):
 		"""
 		IJ.run(self._image, "Stack Splitter", "number="+str(n))
 		out_list = []
-		for img in self._GET_N_RECENT_IMAGES(n):
+		for img in _PyWindowManager._GET_N_RECENT_IMAGES(n):
 			out_list.append(PyImagePlus(_image=img, _path_handler=self.image_path))
 		out_list.reverse()
 		return out_list
@@ -561,8 +690,25 @@ class PyImagePlus(object):
 	
 	def deinterleave(self, n_chans):
 		IJ.run(self._image, "Deinterleave", "how=" + str(n_chans))
-		imgs = self._GET_N_RECENT_IMAGES(n_chans)
+		imgs = _PyWindowManager._GET_N_RECENT_IMAGES(n_chans)
 		return [PyImagePlus(_image=img, _path_handler=self.image_path) for img in imgs]
+
+	def combine(self, other, vert=False):
+		"""
+		runs ImageJ's stack combine function.
+		Warning: this is destructive, and images being combined will individually
+		lose their references.
+		"""		
+		command = "stack1=" + self.title + " stack2=" + other.title
+		if vert:
+			command += " combine"
+		IJ.run("Combine...", command)
+		img = _PyWindowManager._GET_N_RECENT_IMAGES(1)[0]
+
+		#self._REM_IMAGE_BY_TITLE(self.title)
+		#self._REM_IMAGE_BY_TITLE(other.title)
+
+		return PyImagePlus(_image=img, _path_handler=self.image_path).set_title(self.title + other.title)
 		
 
 	##################
@@ -678,8 +824,7 @@ class PyTSeries(PyImagePlus):
 				t0_s = self.time_s[start],
 				_image = imp, 
 				_path_handler=self.image_path
-				)
-			
+				)	
 
 	def time_slice(self, start_ms, stop_ms):
 		"""
@@ -691,7 +836,7 @@ class PyTSeries(PyImagePlus):
 
 	def deinterleave(self, n_chans):
 		IJ.run(self._image, "Deinterleave", "how=" + str(n_chans))
-		imgs = self._GET_N_RECENT_IMAGES(n_chans)
+		imgs = _PyWindowManager._GET_N_RECENT_IMAGES(n_chans)
 		return [
 			PyTSeries(
 				Fs=self.Fs/n_chans,
@@ -703,7 +848,183 @@ class PyTSeries(PyImagePlus):
 
 
 
+class PyImageMatrix(object):
+	"""
+	A class to define array-like operations over python images.
+	These are explicitly 2D arrays. Vectors, nor nd-arrays are allowed.
+	"""
+	_ACCEPTED_CLASSES = [PyImagePlus, PyTSeries]
+	_ACCEPTED_CLASS_NAMES = [x.__name__ for x in _ACCEPTED_CLASSES]
+
+	@staticmethod
+	def _unique(x):
+		first = x[0]
+		return all([x==first for x in x[1:]])
+
+	@classmethod
+	def _assert_class_acceptable(cls, obj):
+		in_valid_options = [isinstance(obj, x) for x in cls._ACCEPTED_CLASSES]
+		if not any(in_valid_options):
+			raise(ValueError("Cannot make PyImageArray from object " + str(obj.__class__.__name__)))
+	
+	@classmethod
+	def _assert_same_class(cls, x):
+		classes = [z.__class__.__name__ for y in x for z in y]
+		if not cls._unique(classes):
+			raise(ValueError("Objects in PyImageArray array are not of the same class."))
+		
+	@classmethod
+	def _assert_2D(cls, x):
+		# check for 2D
+		try:
+			x[0]
+			x[0][0]
+		except:
+			raise(ValueError("Given array is not 2D."))
+
+		# check not 3D
+		# should be able to index into the image, but shouldn't be a list.
+		if x[0][0][1].__class__.__name__ not in cls._ACCEPTED_CLASS_NAMES:
+			raise(ValueError("3D array detected- please use a 2D array."))
+		
+	@staticmethod
+	def _assert_not_ragged(x):
+		lengths = [len(y) for y in x]
+		if len(set(lengths)) != 1:
+			raise(ValueError("Ragged array passed."))
+		
+	@classmethod
+	def _assert_uniform_dims(cls, x):
+		dims = [z.dimensions for y in x for z in y]
+		if not cls._unique(dims):
+			raise(ValueError("Image objects are of unequal dimensions."))
+		
+	@staticmethod
+	def _flatten_2d(x):
+		return [z for y in x for z in y]
+
+	def __init__(self, 
+			  pyimps,
+			  _make_image = True):
+		
+		# assertion list for proper input
+		for pyimp in self._flatten_2d(pyimps):
+			self._assert_class_acceptable(pyimp)
+		self._assert_same_class(pyimps)
+		self._assert_2D(pyimps)
+		self._assert_not_ragged(pyimps)
+		self._assert_uniform_dims(pyimps)
+			
+
+		# set array and file object values
+		self._shape = [len(pyimps), len(pyimps[0])] + pyimps[0][0].dimensions
+		self._flat = self._flatten_2d(pyimps) # no need to save ragged, just save flat along with dimensions
+		self._image_path_list = [x.image_path for x in self._flat]
+		self._titles = [x.title for x in self._flat]
+		self._is_T = False
+
+		if _make_image:
+			# if image is made, operations on elements are off-limits
+			self._image = self._make_matrix_pyimp(self.n_rows, self.n_cols)
+			self._image.show()
+		else:
+			self._image = None	
+
+	@property
+	def shape(self):
+		return tuple(self._shape)
+
+	@property
+	def n_rows(self):
+		return self._shape[0]
+	
+	@property
+	def n_cols(self):
+		return self._shape[1]
+	
+	@property
+	def n_elements(self):
+		return self.n_rows * self.n_cols
+		
+	def _make_matrix_pyimp(self, n_rows, n_cols, T=False):
+		"""
+		used to make the PyImagePlus object expressing these images
+		this is destructive, i.e. the original images no longer exist after
+		calling combine.
+
+		As such, the image made here relies on duplicates of the images.
+		"""
+
+		# duplicates
+		if T:
+			dups = [x.duplicate() for x in self._flat_T]
+			self._is_T = not self._is_T
+		else:
+			dups = [x.duplicate() for x in self._flat]
+
+		# have to form each row independently
+		rows = []
+		for i in range(n_rows):
+			for j in range(n_cols):
+				ind = self._get_flat_ind(self.shape, i,j)
+				if j == 0:
+					cur_img = dups[ind]
+					continue
+				cur_img = cur_img.combine(dups[ind])
+			rows.append(cur_img)
+
+		for i,row in enumerate(rows):
+			if i == 0:
+				cur_row = row
+				continue
+			cur_row = cur_row.combine(row, vert=True)
+		
+		return cur_row
+	
+	@staticmethod
+	def _get_flat_ind(shape, row, col):
+		# shape: the shape of the non-flat list
+		# row: the row index of the non-flat list
+		# col: the col index of the non-flat list
+		# returns the index of the flattened list
+		return (shape[1]*row) + col
+
+	@property
+	def _flat_T(self):
+		"""
+		Return the flat list in an order for easy
+		indexing to create the image
+		"""
+		inds = []
+		for r in range(self.n_rows):
+			inds += [r+(i*self.n_rows) for i in range(self.n_cols)]
+		return [self._flat[i] for i in inds]
+	
+	@property
+	def T(self):
+		# copying old shape
+		cur_shape = self._shape[:]
+
+		# adjusting new shape
+		self._shape[0] = cur_shape[1]
+		self._shape[1] = cur_shape[0]
+
+		# closing the old image and opening a new one
+		self._image.close()
+		self._image = self._make_matrix_pyimp(self.n_rows, self.n_cols, T=True)
+		self._image.show()
+
+	def as_pyimp(self):
+		# convert back to PyImagePlus to have access to all stats tools for this object
+		return PyImagePlus(
+			_image = self._image._image,
+				_path_handler = self._image_path_list[0])
+	
+	#TODO: get rois for individual images to crop them out and save them
+
+	
+
 #######################
 ## Import utils #######
 #######################
-__all__ = ['PyImagePlus', 'PyRoiManager', 'PyTSeries', 'close_all', 'keep_only', 'get_pyimage']
+__all__ = ['PyImagePlus', 'PyRoiManager', 'PyTSeries', 'PyImageMatrix', 'close_all', 'keep_only', 'get_pyimage']
