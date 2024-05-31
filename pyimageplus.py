@@ -58,7 +58,7 @@ class PyRoiManager(object):
 				out_list.append(self._rm.getRoi(i))
 			return out_list
 		
-		elif isinstance(key, str):
+		elif isinstance(key, basestring):
 			name_ind = self.names.index(key)
 			return self._rm.getRoi(name_ind)
 		
@@ -66,7 +66,7 @@ class PyRoiManager(object):
 		# load roi from a given path
 		full_path = os.path.abspath(path)
 		self._rm.open(full_path)
-		print("opened rois")
+		print("Opened rois.")
 		
 	def reset(self):
 		self._rm.reset()
@@ -76,7 +76,7 @@ class PyRoiManager(object):
 		if isinstance(key, int):
 			self._rm.select(pyimp._image, key)
 
-		elif isinstance(key, str):
+		elif isinstance(key, basestring):
 			ind = self._name_to_ind(key)
 			self._rm.select(pyimp._image, ind)
 
@@ -90,7 +90,7 @@ class PyRoiManager(object):
 	def deselect(self, key=None):
 
 		# deselect all or any single roi
-		if isinstance(key, str):
+		if isinstance(key, basestring):
 			ind = self._name_to_ind(key)
 			self._rm.deselect(ind)
 
@@ -547,7 +547,7 @@ class PyImagePlus(object):
 	def __len__(self):
 		return self.stack_size
 	
-	#TODO: fix this: it will return n images as opposed to looping through them individually
+	#FIXME: fix this: it will return n images as opposed to looping through them individually
 	# def __iter__(self):
 	#	return iter([self[i+1] for i in range(len(self))])
 	
@@ -587,7 +587,7 @@ class PyImagePlus(object):
 		"""
 		cur_slice = self._image.getSlice()
 		out = []
-		for i in range(self.n_slices):
+		for i in range(self.stack_size):
 			self._image.setSlice(i+1)
 			if all:
 				out.append(self._image.getAllStatistics())
@@ -1020,7 +1020,7 @@ class PyImageMatrix(object):
 			_image = self._image._image,
 				_path_handler = self._image_path_list[0])
 	
-	#TODO: get rois for individual images to crop them out and save them
+	#TODO: get for individual images to crop them out and save them
 
 	
 
