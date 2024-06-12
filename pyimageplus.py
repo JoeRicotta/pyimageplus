@@ -63,6 +63,7 @@ class PyRoiManager(object):
 			return self._rm.getRoi(name_ind)
 		
 	def open_rois(self, path):
+
 		# load roi from a given path
 		full_path = os.path.abspath(path)
 		self._rm.open(full_path)
@@ -72,6 +73,7 @@ class PyRoiManager(object):
 		self._rm.reset()
 
 	def select(self, pyimp, key):
+
 		# select an roi by name, index or by roi itself
 		if isinstance(key, int):
 			self._rm.select(pyimp._image, key)
@@ -149,6 +151,23 @@ class _PathHandler(object):
 		@source_path.setter
 		def source_path(self, _):
 			raise(ValueError("Cannot edit source path."))
+		
+
+		def update_from_name(self, name, ret=False):
+			"""
+			If the name of the PyImagePlus object changes, this is used
+			to change the savename within the _PathHandler.FromPathHandler base class.
+			"""
+			name = _PathHandler._check_tif(name)
+			self.file = name
+			self.full_path = os.path.join(self.parent, name)
+			
+			self.exists = os.path.exists(self.full_path)
+			self.is_file = os.path.isfile(self.full_path)
+			self.is_dir = os.path.isdir(self.full_path)
+
+			if ret:
+				return self
 
 	class FromPathHandler(object):
 
@@ -168,7 +187,8 @@ class _PathHandler(object):
 			If the name of the PyImagePlus object changes, this is used
 			to change the savename within the _PathHandler.FromPathHandler base class.
 			"""
-			self.file = _PathHandler._check_tif(name)
+			name = _PathHandler._check_tif(name)
+			self.file = name
 			self.full_path = os.path.join(self.parent, name)
 
 			self.exists = os.path.exists(self.full_path)
@@ -330,8 +350,7 @@ class PyImagePlus(object):
 		self._image.setTitle(value) 
 
 		# update filename of the image
-		if isinstance(self.image_path, _PathHandler.FromPathHandler):
-			self.image_path.update_from_name(value, ret=False)
+		self.image_path.update_from_name(value, ret=False)
 
 	@property
 	def stack_size(self):
@@ -550,6 +569,16 @@ class PyImagePlus(object):
 	#FIXME: fix this: it will return n images as opposed to looping through them individually
 	# def __iter__(self):
 	#	return iter([self[i+1] for i in range(len(self))])
+
+	###############
+	# File saving #
+	###############
+	def save(self, savepath=None):
+		if savepath:
+			IJ.saveAs(self._image, "Tiff", os.path.abspath(savepath))
+		else:
+			IJ.saveAs(self._image, "Tiff", self.image_path)
+		print("Wrote" + self.image_path)
 	
 	#####################
 	# Custom operations #
@@ -667,6 +696,10 @@ class PyImagePlus(object):
 		out_list.reverse()
 		return out_list
 	
+	###############################
+	# Miscellaneous functionality #
+	###############################
+
 	def plot(self):
 		"""
 		Create a plot image.
@@ -709,7 +742,54 @@ class PyImagePlus(object):
 		#self._REM_IMAGE_BY_TITLE(other.title)
 
 		return PyImagePlus(_image=img, _path_handler=self.image_path).set_title(self.title + other.title)
+	
+	def z_score(self):
+		"""
+		Returns the z-score of the image stack.
+		"""
+		imp_z = (self - self.z_project("avg")) / self.z_project("sd")
+		return imp_z
+	
+	def percentile(self):
+		"""
+		Returns the image in terms of percentile.
+		"""
+		imp_perc = (self - self.z_project('min')) / (self.z_project('max') - self.z_project('min'))
+		return imp_perc
+	
+	def df_f0(self, f0):
+		"""
+		Returns df/f0 normalization of the given dataset
+		"""
+		if isinstance(f0, int):
+			# normalize to said frame
+			pyimp_dff0 = (self - self[f0]) / self[f0]
+
+		elif isinstance(f0, PyImagePlus):
+			pyimp_dff0 = (self - f0) / f0
+
+		elif isinstance(f0, basestring):
+			# try to get the statistic
+			val = self.z_project(f0)
+			pyimp_dff0 = (self - val) / val
+
+		else:
+			raise(ValueError("Unknown input for df_f0: " + str(f0)))
 		
+		return pyimp_dff0
+	
+	def cv(self):
+		"""
+		Returns the coefficient of variation of the image.
+		"""
+		return self.z_project("sd") / self.z_project('avg')
+	
+	def snr(self):
+		"""
+		Returns a rough estimate of signal to noise ratio, defined as mean/sd.
+		"""
+		return self.z_project("avg") / self.z_project('sd')
+
 
 	##################
 	## ROI utilites ##
