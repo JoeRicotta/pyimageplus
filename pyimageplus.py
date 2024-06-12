@@ -574,11 +574,14 @@ class PyImagePlus(object):
 	# File saving #
 	###############
 	def save(self, savepath=None):
+
 		if savepath:
-			IJ.saveAs(self._image, "Tiff", os.path.abspath(savepath))
+			IJ.saveAs(self._image, "Tiff", str(os.path.abspath(savepath)))
+
 		else:
-			IJ.saveAs(self._image, "Tiff", self.image_path)
-		print("Wrote" + self.image_path)
+			IJ.saveAs(self._image, "Tiff", self.image_path.full_path)
+
+		print("Wrote " + self.image_path.full_path)
 	
 	#####################
 	# Custom operations #
