@@ -108,7 +108,6 @@ class PyRoiManager(object):
 
 		else:
 			raise(ValueError("Unrecognized roi to deselect."))
-		
 
 class _PathHandler(object):
 	"""
@@ -431,6 +430,8 @@ class PyImagePlus(object):
 		return PyImagePlus(_image=new_imp, _path_handler=self.image_path)
 
 	def close(self):
+		# sets changes to false before closing
+		self._image.changes = False
 		self._image.close()
 
 	def hide(self):
@@ -438,6 +439,11 @@ class PyImagePlus(object):
 
 	def show(self):
 		self._image.show()
+
+	def clear_outside(self):
+		# removes everything except outside of the image selection
+		IJ.run(self._image, "Clear Outside", "stack")
+		return self
 
 	####################################
 	## Hyperstack & stack conversions ##
@@ -565,10 +571,6 @@ class PyImagePlus(object):
 		
 	def __len__(self):
 		return self.stack_size
-	
-	#FIXME: fix this: it will return n images as opposed to looping through them individually
-	# def __iter__(self):
-	#	return iter([self[i+1] for i in range(len(self))])
 
 	###############
 	# File saving #
@@ -586,7 +588,6 @@ class PyImagePlus(object):
 	#####################
 	# Custom operations #
 	#####################
-
 	# custom operations
 	def log(self):
 		IJ.run(self._image, "Log", "stack")
@@ -846,6 +847,7 @@ def keep_only(*imgs):
 		if title in keep_titles:
 			continue
 		imp = WindowManager.getImage(title)
+		imp.changes = False # keeps "save changes?" window from appearing during close.
 		imp.close()
 		PyImagePlus._REM_IMAGE_BY_TITLE(title)
 
